@@ -1,0 +1,40 @@
+-- ==============================================================================
+-- SQL MIGRATION - Extend pct_termin_cumul to all non-monthly payment types
+-- Date: 03 Jul 2026
+-- Project: Invoice Progress Monitor
+-- Purpose:
+--   1. Update compute_pct_termin_cumul() so all non-monthly payment types use it
+--   2. Keep the migration rerunnable with DROP IF EXISTS guards
+-- ==============================================================================
+
+drop trigger if exists trg_compute_pct_cumul on public.monthly_status;
+
+create or replace function public.compute_pct_termin_cumul()
+returns trigger language plpgsql as $$
+declare
+  v_cumul numeric;
+begin
+  if new.event_type in ('termin','progress_payment','milestone','turnkey') and new.pct_termin is not null then
+    select coalesce(sum(pct_termin), 0) into v_cumul
+    from public.monthly_status
+    where no_project = new.no_project
+      and event_type = new.event_type
+      and periode <= new.periode
+      and (id != new.id or new.id is null);
+
+    v_cumul := v_cumul + new.pct_termin;
+    new.pct_termin_cumul := v_cumul;
+
+    if v_cumul > 100 then
+      raise exception
+        'Progres kumulatif proyek % jadi %.0f%% (> 100%%). Cek pct_termin tahap-tahap sebelumnya.',
+        new.no_project, v_cumul;
+    end if;
+  end if;
+
+  return new;
+end $$;
+
+create trigger trg_compute_pct_cumul
+  before insert or update on public.monthly_status
+  for each row execute function public.compute_pct_termin_cumul();

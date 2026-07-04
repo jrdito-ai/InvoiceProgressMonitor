@@ -1,0 +1,151 @@
+-- ==============================================================================
+-- SQL MIGRATION - Support All Payment Types + Rename no_termin -> invoice_label
+-- Date: 03 Jul 2026
+-- Project: Invoice Progress Monitor
+-- Purpose:
+--   1. Rename monthly_status.no_termin to invoice_label
+--   2. Allow monthly_status.event_type to support all project payment types
+--   3. Relax and update related constraints
+--   4. Refresh view to expose invoice_label
+--
+-- Run this in Supabase SQL Editor.
+-- ==============================================================================
+
+-- 1. Rename column if still using the old name.
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'monthly_status'
+      and column_name = 'no_termin'
+  ) then
+    alter table public.monthly_status rename column no_termin to invoice_label;
+  end if;
+end $$;
+
+-- 2. Replace event_type check so all payment types are valid.
+alter table public.monthly_status
+  drop constraint if exists monthly_status_event_type_check;
+
+alter table public.monthly_status
+  add constraint monthly_status_event_type_check
+  check (event_type in ('monthly','termin','progress_payment','milestone','turnkey'));
+
+-- 3. Replace label constraint to use invoice_label.
+alter table public.monthly_status
+  drop constraint if exists chk_termin_has_label;
+
+alter table public.monthly_status
+  drop constraint if exists chk_event_has_label;
+
+alter table public.monthly_status
+  add constraint chk_event_has_label
+  check (
+    event_type = 'monthly'
+    or (
+      event_type in ('termin','progress_payment','milestone','turnkey')
+      and invoice_label is not null
+      and btrim(invoice_label) <> ''
+    )
+  );
+
+-- 4. Replace pct constraint so progress percent can be used by all event types.
+alter table public.monthly_status
+  drop constraint if exists chk_pct_termin_required;
+
+alter table public.monthly_status
+  drop constraint if exists chk_pct_termin_optional;
+
+alter table public.monthly_status
+  add constraint chk_pct_termin_optional
+  check (pct_termin is null or (pct_termin > 0 and pct_termin <= 100));
+
+-- 5. Rename existing view column first, if the old name is still present.
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'v_monthly_progress'
+      and column_name = 'no_termin'
+  ) then
+    alter view public.v_monthly_progress rename column no_termin to invoice_label;
+  end if;
+end $$;
+
+-- 6. Refresh view to expose invoice_label and keep current column order stable.
+create or replace view public.v_monthly_progress as
+select
+  m.id,
+  m.periode,
+  m.no_project,
+  m.event_type,
+  m.invoice_label,
+  m.invoice_seq,
+  m.nilai_progress,
+  m.pct_termin,
+  m.pct_termin_cumul,
+  p.nama_project,
+  p.departemen,
+  p.profit_center,
+  p.payment_type,
+  p.contract_value,
+  m.opname,
+  m.bapp,
+  m.submit_invoice,
+  m.correct_invoice,
+  m.piutang_usaha,
+  m.target_konversi_pu,
+  m.ket_konversi_pu,
+  m.target_cash_in,
+  m.ket_cash_in,
+  m.updated_by,
+  m.updated_at,
+  m.version,
+  (
+    (m.opname = 'Done')::int +
+    (m.bapp = 'Done')::int +
+    (m.submit_invoice = 'Done')::int +
+    (m.correct_invoice = 'Done')::int +
+    (m.piutang_usaha = 'Done')::int
+  ) as done_count,
+  round((
+    (m.opname = 'Done')::int +
+    (m.bapp = 'Done')::int +
+    (m.submit_invoice = 'Done')::int +
+    (m.correct_invoice = 'Done')::int +
+    (m.piutang_usaha = 'Done')::int
+  ) * 100.0 / 5, 0) as progress_pct,
+  (
+    m.target_konversi_pu is not null and
+    m.piutang_usaha = 'Not Done' and
+    m.target_konversi_pu < current_date
+  ) as overdue_konversi_pu,
+  (
+    m.target_cash_in is not null and
+    m.target_cash_in < current_date
+  ) as overdue_cash_in,
+  m.nilai_progress_submitted,
+  m.nilai_progress_submitted_by,
+  m.nilai_progress_submitted_at,
+  m.nilai_progress_approved,
+  m.nilai_progress_approved_by,
+  m.nilai_progress_approved_at
+from public.monthly_status m
+join public.projects p on p.no_project = m.no_project;
+
+-- 7. Verification queries.
+select column_name
+from information_schema.columns
+where table_schema = 'public'
+  and table_name = 'monthly_status'
+  and column_name in ('invoice_label', 'no_termin')
+order by column_name;
+
+select conname
+from pg_constraint
+where conrelid = 'public.monthly_status'::regclass
+  and conname in ('monthly_status_event_type_check', 'chk_event_has_label', 'chk_pct_termin_optional');

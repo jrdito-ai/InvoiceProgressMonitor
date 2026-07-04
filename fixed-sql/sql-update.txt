@@ -1,0 +1,133 @@
+-- ==============================================================================
+-- SAFE UPDATE SQL - 03 Jul 2026
+-- Project: Invoice Progress Monitor
+-- Purpose:
+--   Apply only incremental database changes for the new monthly/termin workflow.
+--   This script DOES NOT drop tables and DOES NOT delete existing data.
+--
+-- Run this in Supabase SQL Editor.
+-- ==============================================================================
+
+-- 1. Add nilai_progress submit/approval tracking columns if missing.
+alter table public.monthly_status
+  add column if not exists nilai_progress_submitted boolean default false,
+  add column if not exists nilai_progress_submitted_by text,
+  add column if not exists nilai_progress_submitted_at timestamp with time zone,
+  add column if not exists nilai_progress_approved boolean default false,
+  add column if not exists nilai_progress_approved_by text,
+  add column if not exists nilai_progress_approved_at timestamp with time zone;
+
+-- 2. Ensure existing rows have default boolean values.
+update public.monthly_status
+set
+  nilai_progress_submitted = coalesce(nilai_progress_submitted, false),
+  nilai_progress_approved = coalesce(nilai_progress_approved, false)
+where nilai_progress_submitted is null
+   or nilai_progress_approved is null;
+
+-- 3. Add insert policy so admin/editor can manually create monthly/termin rows.
+drop policy if exists "Editor insert invoice di dept-nya" on public.monthly_status;
+
+create policy "Editor insert invoice di dept-nya"
+  on public.monthly_status for insert
+  with check (
+    public.current_role() in ('admin','editor') and
+    (
+      public.current_role() = 'admin' or
+      no_project in (
+        select no_project from public.projects
+        where departemen = (select departemen from public.profiles where id = auth.uid())
+      )
+    )
+  );
+
+-- 4. Remove obsolete Setup Termin RPC if it exists.
+-- Termin rows are now created manually from the Input & Edit tab.
+drop function if exists public.setup_termins(text, jsonb);
+
+-- 5. Refresh view so approval fields are available to any view-based consumers.
+-- IMPORTANT:
+-- PostgreSQL does not allow CREATE OR REPLACE VIEW to insert new columns in the
+-- middle of an existing view. Existing column order must remain unchanged.
+-- Therefore, the nilai_progress approval fields are appended at the end.
+create or replace view public.v_monthly_progress as
+select
+  m.id,
+  m.periode,
+  m.no_project,
+  m.event_type,
+  m.no_termin,
+  m.invoice_seq,
+  m.nilai_progress,
+  m.pct_termin,
+  m.pct_termin_cumul,
+  p.nama_project,
+  p.departemen,
+  p.profit_center,
+  p.payment_type,
+  p.contract_value,
+  m.opname,
+  m.bapp,
+  m.submit_invoice,
+  m.correct_invoice,
+  m.piutang_usaha,
+  m.target_konversi_pu,
+  m.ket_konversi_pu,
+  m.target_cash_in,
+  m.ket_cash_in,
+  m.updated_by,
+  m.updated_at,
+  m.version,
+  (
+    (m.opname = 'Done')::int +
+    (m.bapp = 'Done')::int +
+    (m.submit_invoice = 'Done')::int +
+    (m.correct_invoice = 'Done')::int +
+    (m.piutang_usaha = 'Done')::int
+  ) as done_count,
+  round((
+    (m.opname = 'Done')::int +
+    (m.bapp = 'Done')::int +
+    (m.submit_invoice = 'Done')::int +
+    (m.correct_invoice = 'Done')::int +
+    (m.piutang_usaha = 'Done')::int
+  ) * 100.0 / 5, 0) as progress_pct,
+  (
+    m.target_konversi_pu is not null and
+    m.piutang_usaha = 'Not Done' and
+    m.target_konversi_pu < current_date
+  ) as overdue_konversi_pu,
+  (
+    m.target_cash_in is not null and
+    m.target_cash_in < current_date
+  ) as overdue_cash_in,
+  m.nilai_progress_submitted,
+  m.nilai_progress_submitted_by,
+  m.nilai_progress_submitted_at,
+  m.nilai_progress_approved,
+  m.nilai_progress_approved_by,
+  m.nilai_progress_approved_at
+from public.monthly_status m
+join public.projects p on p.no_project = m.no_project;
+
+-- 6. Optional verification queries.
+-- These should return rows/metadata and should not modify data.
+select column_name, data_type
+from information_schema.columns
+where table_schema = 'public'
+  and table_name = 'monthly_status'
+  and column_name in (
+    'nilai_progress_submitted',
+    'nilai_progress_submitted_by',
+    'nilai_progress_submitted_at',
+    'nilai_progress_approved',
+    'nilai_progress_approved_by',
+    'nilai_progress_approved_at'
+  )
+order by column_name;
+
+select policyname, cmd
+from pg_policies
+where schemaname = 'public'
+  and tablename = 'monthly_status'
+  and policyname = 'Editor insert invoice di dept-nya';

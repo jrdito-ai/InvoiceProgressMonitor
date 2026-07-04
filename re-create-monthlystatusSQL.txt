@@ -1,0 +1,238 @@
+-- ============================================================================
+-- Recreate monthly_status table
+-- WARNING: This deletes all data in public.monthly_status and clears audit_log.
+-- Run in Supabase SQL editor as an admin.
+-- ============================================================================
+
+-- ---------------------------------------------------------------------------
+-- 1) Drop objects that depend on monthly_status
+-- ---------------------------------------------------------------------------
+
+DROP VIEW IF EXISTS public.v_monthly_progress;
+
+DROP POLICY IF EXISTS "Admin akses semua" ON public.monthly_status;
+DROP POLICY IF EXISTS "User lihat invoice di dept-nya" ON public.monthly_status;
+DROP POLICY IF EXISTS "Editor/Viewer edit invoice di dept-nya" ON public.monthly_status;
+DROP POLICY IF EXISTS "Editor insert invoice di dept-nya" ON public.monthly_status;
+DROP POLICY IF EXISTS "Editor delete invoice di dept-nya" ON public.monthly_status;
+
+DROP TRIGGER IF EXISTS trg_ms_before_write ON public.monthly_status;
+DROP TRIGGER IF EXISTS trg_ms_audit ON public.monthly_status;
+DROP TRIGGER IF EXISTS trg_compute_pct_cumul ON public.monthly_status;
+
+DROP INDEX IF EXISTS public.idx_ms_periode;
+DROP INDEX IF EXISTS public.idx_ms_project;
+
+DROP TABLE IF EXISTS public.monthly_status CASCADE;
+
+TRUNCATE TABLE public.audit_log;
+
+-- ---------------------------------------------------------------------------
+-- 2) Recreate monthly_status
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE public.monthly_status (
+  id bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  no_project text NOT NULL REFERENCES public.projects(no_project),
+  periode date NOT NULL,
+  event_type text NOT NULL DEFAULT 'monthly'
+    CHECK (event_type IN ('monthly','termin','progress_payment','milestone','turnkey')),
+
+  invoice_seq integer NOT NULL DEFAULT 1,
+  invoice_label text,
+
+  nilai_progress numeric CHECK (nilai_progress > 0),
+  nilai_progress_submitted boolean DEFAULT false,
+  nilai_progress_submitted_by text,
+  nilai_progress_submitted_at timestamp with time zone,
+  nilai_progress_approved boolean DEFAULT false,
+  nilai_progress_approved_by text,
+  nilai_progress_approved_at timestamp with time zone,
+
+  pct_termin numeric CHECK (pct_termin > 0 AND pct_termin <= 100),
+  pct_termin_cumul numeric CHECK (pct_termin_cumul >= 0 AND pct_termin_cumul <= 100),
+
+  opname text CHECK (opname IN ('Done','Not Done')),
+  bapp text CHECK (bapp IN ('Done','Not Done')),
+  submit_invoice text CHECK (submit_invoice IN ('Done','Not Done')),
+  correct_invoice text CHECK (correct_invoice IN ('Done','Not Done')),
+  piutang_usaha text CHECK (piutang_usaha IN ('Done','Not Done')),
+
+  target_konversi_pu date,
+  ket_konversi_pu text,
+  target_cash_in date,
+  ket_cash_in text,
+
+  version integer NOT NULL DEFAULT 1,
+  updated_by text,
+  updated_at timestamp with time zone,
+  created_at timestamp with time zone DEFAULT now(),
+
+  UNIQUE (no_project, periode, event_type, invoice_seq),
+
+  CONSTRAINT chk_event_has_label
+    CHECK (
+      event_type = 'monthly'
+      OR (
+        event_type IN ('termin','progress_payment','milestone','turnkey')
+        AND invoice_label IS NOT NULL
+        AND btrim(invoice_label) <> ''
+      )
+    ),
+
+  CONSTRAINT chk_pct_termin_optional
+    CHECK (pct_termin IS NULL OR (pct_termin > 0 AND pct_termin <= 100))
+);
+
+CREATE INDEX idx_ms_periode ON public.monthly_status (periode);
+CREATE INDEX idx_ms_project ON public.monthly_status (no_project);
+
+-- ---------------------------------------------------------------------------
+-- 3) Recreate triggers
+-- ---------------------------------------------------------------------------
+
+CREATE TRIGGER trg_ms_before_write
+  BEFORE INSERT OR UPDATE ON public.monthly_status
+  FOR EACH ROW EXECUTE FUNCTION public.ms_before_write();
+
+CREATE TRIGGER trg_ms_audit
+  AFTER INSERT OR UPDATE ON public.monthly_status
+  FOR EACH ROW EXECUTE FUNCTION public.ms_audit();
+
+CREATE TRIGGER trg_compute_pct_cumul
+  BEFORE INSERT OR UPDATE ON public.monthly_status
+  FOR EACH ROW EXECUTE FUNCTION public.compute_pct_termin_cumul();
+
+-- ---------------------------------------------------------------------------
+-- 4) Re-enable RLS and recreate policies
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE public.monthly_status ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Admin akses semua" ON public.monthly_status
+  FOR ALL
+  USING (public.current_role() = 'admin');
+
+CREATE POLICY "User lihat invoice di dept-nya" ON public.monthly_status
+  FOR SELECT
+  USING (
+    public.current_role() = 'admin' OR
+    no_project IN (
+      SELECT no_project
+      FROM public.projects
+      WHERE departemen = (SELECT departemen FROM public.profiles WHERE id = auth.uid())
+    )
+  );
+
+CREATE POLICY "Editor/Viewer edit invoice di dept-nya" ON public.monthly_status
+  FOR UPDATE
+  USING (
+    public.current_role() IN ('admin','editor') AND
+    (
+      public.current_role() = 'admin' OR
+      no_project IN (
+        SELECT no_project
+        FROM public.projects
+        WHERE departemen = (SELECT departemen FROM public.profiles WHERE id = auth.uid())
+      )
+    )
+  )
+  WITH CHECK (true);
+
+CREATE POLICY "Editor insert invoice di dept-nya" ON public.monthly_status
+  FOR INSERT
+  WITH CHECK (
+    public.current_role() IN ('admin','editor') AND
+    (
+      public.current_role() = 'admin' OR
+      no_project IN (
+        SELECT no_project
+        FROM public.projects
+        WHERE departemen = (SELECT departemen FROM public.profiles WHERE id = auth.uid())
+      )
+    )
+  );
+
+CREATE POLICY "Editor delete invoice di dept-nya" ON public.monthly_status
+  FOR DELETE
+  USING (
+    public.current_role() = 'admin' OR
+    (
+      public.current_role() = 'editor' AND
+      no_project IN (
+        SELECT no_project
+        FROM public.projects
+        WHERE departemen = (SELECT departemen FROM public.profiles WHERE id = auth.uid())
+      )
+    )
+  );
+
+-- ---------------------------------------------------------------------------
+-- 5) Recreate view
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE VIEW public.v_monthly_progress AS
+SELECT
+  m.id,
+  m.periode,
+  m.no_project,
+  m.event_type,
+  m.invoice_seq,
+  m.nilai_progress,
+  m.nilai_progress_submitted,
+  m.nilai_progress_submitted_by,
+  m.nilai_progress_submitted_at,
+  m.nilai_progress_approved,
+  m.nilai_progress_approved_by,
+  m.nilai_progress_approved_at,
+  m.pct_termin,
+  m.pct_termin_cumul,
+  p.nama_project,
+  p.departemen,
+  p.profit_center,
+  p.payment_type,
+  p.contract_value,
+  m.opname,
+  m.bapp,
+  m.submit_invoice,
+  m.correct_invoice,
+  m.piutang_usaha,
+  m.target_konversi_pu,
+  m.ket_konversi_pu,
+  m.target_cash_in,
+  m.ket_cash_in,
+  m.updated_by,
+  m.updated_at,
+  m.version,
+  (
+    (m.opname = 'Done')::int +
+    (m.bapp = 'Done')::int +
+    (m.submit_invoice = 'Done')::int +
+    (m.correct_invoice = 'Done')::int +
+    (m.piutang_usaha = 'Done')::int
+  ) AS done_count,
+  ROUND((
+    (m.opname = 'Done')::int +
+    (m.bapp = 'Done')::int +
+    (m.submit_invoice = 'Done')::int +
+    (m.correct_invoice = 'Done')::int +
+    (m.piutang_usaha = 'Done')::int
+  ) * 100.0 / 5, 0) AS progress_pct,
+  (
+    m.target_konversi_pu IS NOT NULL
+    AND m.piutang_usaha = 'Not Done'
+    AND m.target_konversi_pu < CURRENT_DATE
+  ) AS overdue_konversi_pu,
+  (
+    m.target_cash_in IS NOT NULL
+    AND m.target_cash_in < CURRENT_DATE
+  ) AS overdue_cash_in
+FROM public.monthly_status m
+JOIN public.projects p ON p.no_project = m.no_project;
+
+-- ---------------------------------------------------------------------------
+-- 6) Verification queries
+-- ---------------------------------------------------------------------------
+-- SELECT COUNT(*) FROM public.monthly_status;
+-- SELECT * FROM pg_policies WHERE tablename = 'monthly_status';
+-- SELECT trigger_name FROM information_schema.triggers WHERE event_object_table = 'monthly_status';
