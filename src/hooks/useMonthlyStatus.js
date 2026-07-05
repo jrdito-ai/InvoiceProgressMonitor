@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "./useAuthContext";
 
+const SUPER_VIEWERS = ["dept.oc@adhi.co.id"];
+
 /**
  * Hook: useMonthlyStatus
  * Fetch all projects and selected-period monthly_status rows, then combine them.
@@ -28,6 +30,7 @@ export function useMonthlyStatus(periode) {
     setError(null);
 
     try {
+      const isSuperViewer = SUPER_VIEWERS.includes(profile.email);
       const [year, month] = periode.split("-");
       const dateValue = `${year}-${month}-01`;
       const currentDate = new Date(`${dateValue}T00:00:00`);
@@ -39,7 +42,7 @@ export function useMonthlyStatus(periode) {
         .select("no_project, nama_project, departemen, profit_center, payment_type, contract_value")
         .order("no_project");
 
-      if (profile.role !== "admin" && profile.departemen) {
+      if (profile.role !== "admin" && profile.departemen && !isSuperViewer) {
         projectQuery = projectQuery.eq("departemen", profile.departemen);
       }
 

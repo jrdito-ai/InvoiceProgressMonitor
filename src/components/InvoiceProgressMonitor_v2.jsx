@@ -53,6 +53,7 @@ const PAYMENT_TYPE_COLORS = {
   turnkey: "bg-rose-50 text-rose-700",
 };
 const ROLE_LABELS = { admin: "Admin", editor: "Editor", viewer: "Viewer" };
+const SUPER_VIEWERS = ["dept.oc@adhi.co.id"];
 
 const toPeriodDate = (periode) => `${periode}-01`;
 const toNumber = (value) => {
@@ -131,6 +132,7 @@ function EmptyState({ title, subtitle }) {
 
 export default function InvoiceProgressMonitor() {
   const { profile, logout, isAdmin } = useAuth();
+  const isSuperViewer = SUPER_VIEWERS.includes(profile?.email);
   const [periode, setPeriode] = useState(() => {
     const today = new Date();
     return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
@@ -201,7 +203,10 @@ export default function InvoiceProgressMonitor() {
   const depts = useMemo(() => ["Semua", ...new Set(projects.map((p) => p.departemen))].filter(Boolean).sort(), [projects]);
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.no_project, project])), [projects]);
   const selectableProjects = useMemo(() => projects.filter((p) => applied.dept === "Semua" || p.departemen === applied.dept), [projects, applied.dept]);
-  const rows = useMemo(() => data.filter((r) => applied.dept === "Semua" || r.departemen === applied.dept), [data, applied.dept]);
+  const rows = useMemo(() => {
+    if (isSuperViewer) return data;
+    return data.filter((r) => applied.dept === "Semua" || r.departemen === applied.dept);
+  }, [data, applied.dept, isSuperViewer]);
   const isFutureSelectedPeriod = useMemo(() => {
     if (!applied.periode) return false;
     const [year, month] = applied.periode.split("-").map(Number);
