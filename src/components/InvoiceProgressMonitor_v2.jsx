@@ -54,6 +54,7 @@ const PAYMENT_TYPE_COLORS = {
 };
 const ROLE_LABELS = { admin: "Admin", editor: "Editor", viewer: "Viewer" };
 const SUPER_VIEWERS = ["dept.oc@adhi.co.id"];
+const CASH_IN_DONE_MARKER = "[CASH_IN_DONE]";
 
 const toPeriodDate = (periode) => `${periode}-01`;
 const toNumber = (value) => {
@@ -102,6 +103,8 @@ const formatPeriodWithContext = (value, appliedPeriode) => {
   const isCurrent = value.slice(0, 7) === appliedPeriode.slice(0, 7);
   return `${monthYear} • ${isCurrent ? "Current" : "Previous"}`;
 };
+const cleanCashInNote = (value) => String(value || "").replace(CASH_IN_DONE_MARKER, "").trim();
+const isCashInDone = (row, draftValue) => String((draftValue ?? row?.ket_cash_in) || "").startsWith(CASH_IN_DONE_MARKER);
 
 function Pill({ value, editable, disabled, title, onClick }) {
   const done = value === D;
@@ -217,10 +220,8 @@ export default function InvoiceProgressMonitor() {
   const depts = useMemo(() => ["Semua", ...new Set(projects.map((p) => p.departemen))].filter(Boolean).sort(), [projects]);
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.no_project, project])), [projects]);
   const selectableProjects = useMemo(() => projects.filter((p) => applied.dept === "Semua" || p.departemen === applied.dept), [projects, applied.dept]);
-  const rows = useMemo(() => {
-    if (isSuperViewer) return data;
-    return data.filter((r) => applied.dept === "Semua" || r.departemen === applied.dept);
-  }, [data, applied.dept, isSuperViewer]);
+  const rows = useMemo(() => data.filter((r) => applied.dept === "Semua" || r.departemen === applied.dept), [data, applied.dept]);
+  const activeRows = useMemo(() => rows.filter((row) => row.id !== null), [rows]);
   const isFutureSelectedPeriod = useMemo(() => {
     if (!applied.periode) return false;
     const [year, month] = applied.periode.split("-").map(Number);
@@ -267,22 +268,22 @@ export default function InvoiceProgressMonitor() {
   }, [filteredRows, currentPage, isFutureSelectedPeriod]);
 
   const kpi = useMemo(() => ({
-    total: rows.filter((row) => row.id !== null).length,
-    monthly: rows.filter((row) => row.event_type === "monthly").length,
-    termin: rows.filter((row) => row.event_type === "termin").length,
-    totalNilai: rows.reduce((sum, row) => sum + Number(row.nilai_progress || 0), 0),
-    konversiPiutang: rows.length > 0 ? Math.round((rows.filter((row) => row.piutang_usaha === D).length / rows.length) * 100) : 0,
-    overdue: rows.filter((row) => (
-      row.target_cash_in && row.target_cash_in < new Date().toISOString().slice(0, 10)
+    total: activeRows.length,
+    monthly: activeRows.filter((row) => row.event_type === "monthly").length,
+    termin: activeRows.filter((row) => row.event_type === "termin").length,
+    totalNilai: activeRows.reduce((sum, row) => sum + Number(row.nilai_progress || 0), 0),
+    konversiPiutang: activeRows.length > 0 ? Math.round((activeRows.filter((row) => row.piutang_usaha === D).length / activeRows.length) * 100) : 0,
+    overdue: activeRows.filter((row) => (
+      row.target_cash_in && row.target_cash_in < new Date().toISOString().slice(0, 10) && !isCashInDone(row)
     ) || (
       row.target_konversi_pu && row.target_konversi_pu < new Date().toISOString().slice(0, 10) && row.piutang_usaha !== D
     )).length,
-  }), [rows]);
-  const funnel = useMemo(() => STAGES.map((stage) => ({ name: stage.label, count: rows.filter((row) => row[stage.key] === D).length })), [rows]);
+  }), [activeRows]);
+  const funnel = useMemo(() => STAGES.map((stage) => ({ name: stage.label, count: activeRows.filter((row) => row[stage.key] === D).length })), [activeRows]);
   const nilaiPipeline = useMemo(() => STAGES.map((stage) => ({
     name: stage.label,
-    nilai: Math.round(rows.filter((row) => row[stage.key] === D).reduce((sum, row) => sum + Number(row.nilai_progress || 0), 0)),
-  })), [rows]);
+    nilai: Math.round(activeRows.filter((row) => row[stage.key] === D).reduce((sum, row) => sum + Number(row.nilai_progress || 0), 0)),
+  })), [activeRows]);
   const funnelColors = ["#6366f1", "#6d6ff2", "#818cf8", "#a5b4fc", "#c7d2fe"];
   const nilaiColors = ["#0ea5e9", "#0284c7", "#0369a1", "#075985", "#0c4a6e"];
   const stageColors = {
@@ -294,7 +295,7 @@ export default function InvoiceProgressMonitor() {
   };
   const statusByDept = useMemo(() => {
     const map = {};
-    rows.forEach((row) => {
+    activeRows.forEach((row) => {
       const dept = row.departemen || "Lainnya";
       const item = (map[dept] ||= {
         departemen: dept,
@@ -309,22 +310,19 @@ export default function InvoiceProgressMonitor() {
       });
     });
     return Object.values(map);
-  }, [rows]);
-  const overdueRows = useMemo(() => rows.filter((row) => (
-    row.target_cash_in && row.target_cash_in < new Date().toISOString().slice(0, 10)
+  }, [activeRows]);
+  const overdueRows = useMemo(() => activeRows.filter((row) => (
+    row.target_cash_in && row.target_cash_in < new Date().toISOString().slice(0, 10) && !isCashInDone(row)
   ) || (
     row.target_konversi_pu && row.target_konversi_pu < new Date().toISOString().slice(0, 10) && row.piutang_usaha !== D
-  )), [rows]);
+  )), [activeRows]);
 
   const onLoad = () => {
     setApplied({ periode, dept: fDept });
     setAppliedSearch(searchQuery);
     setCurrentPage(1);
   };
-  const isKeteranganLocked = (row, field) => {
-    if (row.month_group === "previous") return true;
-    return Boolean(row[field]);
-  };
+  const isKeteranganLocked = (row) => row.month_group === "previous";
   const getTargetDraftValue = (row, field) => {
     const draftKey = `${row.id}-${field}`;
     return targetDraftState[draftKey] ?? row[field] ?? "";
@@ -371,7 +369,14 @@ export default function InvoiceProgressMonitor() {
   };
   const saveKeterangan = async (row, field) => {
     if (!canEdit || row.month_group === "previous") return;
-    const value = ketState[`${row.id}-${field}`];
+    const draftValue = ketState[`${row.id}-${field}`];
+    const value = field === "ket_cash_in"
+      ? (() => {
+        const cleanedValue = cleanCashInNote(draftValue);
+        if (!cleanedValue) return isCashInDone(row, draftValue) ? CASH_IN_DONE_MARKER : null;
+        return isCashInDone(row, draftValue) ? `${CASH_IN_DONE_MARKER} ${cleanedValue}` : cleanedValue;
+      })()
+      : (draftValue || null);
     setBusy(`ket:${row.id}:${field}`);
     const result = await updateTargets(row.id, { [field]: value || null }, row.version);
     setBusy("");
@@ -385,6 +390,25 @@ export default function InvoiceProgressMonitor() {
     } else {
       flash(result.error || "Gagal simpan keterangan");
     }
+  };
+  const setCashInStatus = async (row, done) => {
+    if (!canEdit || row.month_group === "previous") return;
+    const draftKey = `${row.id}-ket_cash_in`;
+    const note = cleanCashInNote(ketState[draftKey] ?? row.ket_cash_in);
+    const nextValue = done ? (note ? `${CASH_IN_DONE_MARKER} ${note}` : CASH_IN_DONE_MARKER) : (note || null);
+    setBusy(`cashin:${row.id}`);
+    const result = await updateTargets(row.id, { ket_cash_in: nextValue }, row.version);
+    setBusy("");
+    if (result.success) {
+      flash(done ? "Cash in ditandai Done" : "Cash in ditandai Not Done");
+      setKetState((prev) => {
+        const next = { ...prev };
+        delete next[draftKey];
+        return next;
+      });
+      return;
+    }
+    flash(result.error || "Gagal update status cash in");
   };
   const openEditModal = (row) => {
     setEditingRow(row);
@@ -762,7 +786,7 @@ export default function InvoiceProgressMonitor() {
             {rows.length === 0 ? <EmptyState title="Belum ada data" subtitle="Tidak ada proyek untuk filter departemen yang dipilih." /> : (
               <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
                 <table className="min-w-[1280px] w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-3">Project</th><th className="px-3 py-3">Periode</th><th className="px-3 py-3">Type</th><th className="px-3 py-3">Nilai Progress</th><th className="px-3 py-3">Progress (%)</th>{STAGES.map((stage) => <th key={stage.key} className="px-3 py-3">{stage.label}</th>)}<th className="px-3 py-3">Target Konversi Piutang Usaha</th><th className="px-3 py-3">Target Cash In</th><th className="px-3 py-3">Action</th></tr></thead>
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-3">Project</th><th className="px-3 py-3">Periode</th><th className="px-3 py-3">Type</th><th className="px-3 py-3">Nilai Progress</th><th className="px-3 py-3">Progress (%)</th>{STAGES.map((stage) => <th key={stage.key} className="px-3 py-3">{stage.label}</th>)}<th className="px-3 py-3">Target Konversi Piutang Usaha</th><th className="px-3 py-3">Target Cash In</th><th className="px-3 py-3">Status Cash In</th><th className="px-3 py-3">Action</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
                     {paginatedRows.map((row) => {
                       if (row.id === null && row.month_group === "previous") {
@@ -776,7 +800,7 @@ export default function InvoiceProgressMonitor() {
                             </div>
                           </td>
                             <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-medium ${PAYMENT_TYPE_COLORS[row.payment_type] || "bg-slate-50 text-slate-700"}`}>{PAYMENT_TYPE_LABELS[row.payment_type] || row.payment_type}</span></td>
-                            <td colSpan={row.nilai_progress ? 1 : 8} className="px-3 py-3"><div className="flex items-center justify-between rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-3"><span className="text-sm text-slate-500">No Data - Click to create</span><button onClick={() => handleCreateForProject(row)} disabled={!canEdit} className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">Create</button></div></td>
+                            <td colSpan={row.nilai_progress ? 1 : 11} className="px-3 py-3"><div className="flex items-center justify-between rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-3"><span className="text-sm text-slate-500">No Data - Click to create</span><button onClick={() => handleCreateForProject(row)} disabled={!canEdit} className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">Create</button></div></td>
                           </tr>
                         );
                       }
@@ -794,7 +818,7 @@ export default function InvoiceProgressMonitor() {
                             </div>
                           </td>
                           <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-medium ${PAYMENT_TYPE_COLORS[row.event_type] || "bg-slate-50 text-slate-700"}`}>{PAYMENT_TYPE_LABELS[row.event_type] || row.event_type}</span>{row.invoice_label && <div className="mt-1 text-xs text-slate-500">{row.invoice_label}</div>}<div className="mt-1"><StatusBadge row={row} /></div></td>
-                          <td colSpan={row.nilai_progress ? 1 : 8} className="px-3 py-3">
+                          <td colSpan={row.nilai_progress ? 1 : 11} className="px-3 py-3">
                             <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-3">
                               <div className={row.nilai_progress ? "flex-1 min-w-0" : ""}>
                                 {row.nilai_progress ? (
@@ -837,7 +861,8 @@ export default function InvoiceProgressMonitor() {
                             );
                           })}
                           {row.nilai_progress && <td className="px-3 py-3"><div className="space-y-1.5"><input value={getTargetDraftValue(row, "target_konversi_pu")} onChange={(e) => setTargetDraftState((prev) => ({ ...prev, [`${row.id}-target_konversi_pu`]: e.target.value }))} onBlur={(e) => { const nextValue = e.target.value || null; if ((row.target_konversi_pu || null) === nextValue) { setTargetDraftState((prev) => { const next = { ...prev }; delete next[`${row.id}-target_konversi_pu`]; return next; }); return; } changeTarget(row, { target_konversi_pu: nextValue }); }} disabled={!canEdit || row.month_group === "previous"} type="date" className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm disabled:bg-slate-50" /><input value={(ketState[`${row.id}-ket_konversi_pu`] ?? row.ket_konversi_pu) || ""} onChange={(e) => setKetState((prev) => ({ ...prev, [`${row.id}-ket_konversi_pu`]: e.target.value }))} disabled={!canEdit || isKeteranganLocked(row, "ket_konversi_pu")} placeholder="Keterangan konversi PU" className="w-full rounded-lg border border-slate-200 px-2 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-500" />{!isKeteranganLocked(row, "ket_konversi_pu") && <button onClick={() => saveKeterangan(row, "ket_konversi_pu")} disabled={!canEdit || busy === `ket:${row.id}:ket_konversi_pu`} className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">Simpan Keterangan</button>}</div></td>}
-                          {row.nilai_progress && <td className="px-3 py-3"><div className="space-y-1.5"><input value={getTargetDraftValue(row, "target_cash_in")} onChange={(e) => setTargetDraftState((prev) => ({ ...prev, [`${row.id}-target_cash_in`]: e.target.value }))} onBlur={(e) => { const nextValue = e.target.value || null; if ((row.target_cash_in || null) === nextValue) { setTargetDraftState((prev) => { const next = { ...prev }; delete next[`${row.id}-target_cash_in`]; return next; }); return; } changeTarget(row, { target_cash_in: nextValue }); }} disabled={!canEdit || row.month_group === "previous"} type="date" className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm disabled:bg-slate-50" /><input value={(ketState[`${row.id}-ket_cash_in`] ?? row.ket_cash_in) || ""} onChange={(e) => setKetState((prev) => ({ ...prev, [`${row.id}-ket_cash_in`]: e.target.value }))} disabled={!canEdit || isKeteranganLocked(row, "ket_cash_in")} placeholder="Keterangan cash in" className="w-full rounded-lg border border-slate-200 px-2 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-500" />{!isKeteranganLocked(row, "ket_cash_in") && <button onClick={() => saveKeterangan(row, "ket_cash_in")} disabled={!canEdit || busy === `ket:${row.id}:ket_cash_in`} className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">Simpan Keterangan</button>}</div></td>}
+                          {row.nilai_progress && <td className="px-3 py-3"><div className="space-y-1.5"><input value={getTargetDraftValue(row, "target_cash_in")} onChange={(e) => setTargetDraftState((prev) => ({ ...prev, [`${row.id}-target_cash_in`]: e.target.value }))} onBlur={(e) => { const nextValue = e.target.value || null; if ((row.target_cash_in || null) === nextValue) { setTargetDraftState((prev) => { const next = { ...prev }; delete next[`${row.id}-target_cash_in`]; return next; }); return; } changeTarget(row, { target_cash_in: nextValue }); }} disabled={!canEdit || row.month_group === "previous"} type="date" className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm disabled:bg-slate-50" /><input value={cleanCashInNote(ketState[`${row.id}-ket_cash_in`] ?? row.ket_cash_in)} onChange={(e) => setKetState((prev) => ({ ...prev, [`${row.id}-ket_cash_in`]: e.target.value }))} disabled={!canEdit || isKeteranganLocked(row, "ket_cash_in")} placeholder="Keterangan cash in" className="w-full rounded-lg border border-slate-200 px-2 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-500" />{!isKeteranganLocked(row, "ket_cash_in") && <button onClick={() => saveKeterangan(row, "ket_cash_in")} disabled={!canEdit || busy === `ket:${row.id}:ket_cash_in`} className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">Simpan Keterangan</button>}</div></td>}
+                          {row.nilai_progress && <td className="px-3 py-3"><div className="space-y-1.5"><div className="flex items-center gap-1"><button type="button" onClick={() => setCashInStatus(row, true)} disabled={!canEdit || row.month_group === "previous" || busy === `cashin:${row.id}`} title="Klik untuk tandai cash in sudah diterima" className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-semibold transition ${isCashInDone(row) ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-200 bg-white text-slate-500 hover:bg-emerald-50 hover:text-emerald-700"} disabled:cursor-not-allowed disabled:opacity-50`}>✓</button><button type="button" onClick={() => setCashInStatus(row, false)} disabled={!canEdit || row.month_group === "previous" || busy === `cashin:${row.id}`} title="Klik untuk tandai cash in belum diterima" className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border text-sm font-semibold transition ${!isCashInDone(row) ? "border-rose-600 bg-rose-50 text-rose-700" : "border-slate-200 bg-white text-slate-500 hover:bg-rose-50 hover:text-rose-700"} disabled:cursor-not-allowed disabled:opacity-50`}>X</button></div><div className="text-[11px] leading-tight text-slate-400">Klik `✓` saat cash in sudah diterima.</div></div></td>}
                           {row.nilai_progress && <td className="px-3 py-3"><button onClick={async () => { const result = await deleteInvoice(row.id); flash(result.success ? "Row dihapus" : result.error || "Gagal hapus"); }} disabled={!canEdit || row.month_group === "previous"} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"><Trash2 size={16} /></button></td>}
                         </tr>
                       );
