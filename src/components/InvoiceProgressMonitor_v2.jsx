@@ -61,10 +61,24 @@ const toNumber = (value) => {
   const number = Number(String(value).replace(/[^0-9.-]/g, ""));
   return Number.isFinite(number) ? number : null;
 };
+const jutaToRupiah = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return number * 1_000_000;
+};
 const formatIDR = (value) => {
   const number = Number(value);
   if (!Number.isFinite(number)) return "-";
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(number);
+};
+const formatIDRFromJuta = (value) => {
+  const rupiahValue = jutaToRupiah(value);
+  return rupiahValue === null ? "-" : formatIDR(rupiahValue);
+};
+const formatJuta = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return new Intl.NumberFormat("id-ID", { maximumFractionDigits: 2 }).format(number);
 };
 const formatDateID = (value) => {
   if (!value) return "-";
@@ -267,7 +281,7 @@ export default function InvoiceProgressMonitor() {
   const funnel = useMemo(() => STAGES.map((stage) => ({ name: stage.label, count: rows.filter((row) => row[stage.key] === D).length })), [rows]);
   const nilaiPipeline = useMemo(() => STAGES.map((stage) => ({
     name: stage.label,
-    nilai: Math.round(rows.filter((row) => row[stage.key] === D).reduce((sum, row) => sum + Number(row.nilai_progress || 0), 0) / 1_000_000),
+    nilai: Math.round(rows.filter((row) => row[stage.key] === D).reduce((sum, row) => sum + Number(row.nilai_progress || 0), 0)),
   })), [rows]);
   const funnelColors = ["#6366f1", "#6d6ff2", "#818cf8", "#a5b4fc", "#c7d2fe"];
   const nilaiColors = ["#0ea5e9", "#0284c7", "#0369a1", "#075985", "#0c4a6e"];
@@ -507,7 +521,7 @@ export default function InvoiceProgressMonitor() {
           <div className="space-y-5">
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <Kpi label="Billing Events" value={kpi.total} sub={`${kpi.monthly} monthly · ${kpi.termin} termin`} />
-              <Kpi label="Total Nilai Progress" value={formatIDR(kpi.totalNilai)} sub="seluruh billing event" />
+              <Kpi label="Total Nilai Progress (Juta Rp)" value={formatJuta(kpi.totalNilai)} sub="seluruh billing event" />
               <Kpi label="Konversi Piutang Usaha" value={`${kpi.konversiPiutang}%`} sub="dari total events" />
               <Kpi label="Overdue" value={kpi.overdue} sub="target konversi / cash in terlewat" />
             </div>
@@ -542,10 +556,10 @@ export default function InvoiceProgressMonitor() {
                     <CartesianGrid horizontal={false} stroke="#f1f5f9" />
                     <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11, fill: "#94a3b8" }} />
                     <YAxis type="category" dataKey="name" width={104} tick={{ fontSize: 12, fill: "#475569" }} />
-                    <Tooltip cursor={{ fill: "#f8fafc" }} formatter={(value) => [`Rp ${value} jt`, "Nilai"]} />
+                    <Tooltip cursor={{ fill: "#f8fafc" }} formatter={(value) => [Number(value).toLocaleString("id-ID"), "Nilai (juta Rp)"]} />
                     <Bar dataKey="nilai" radius={[0, 6, 6, 0]}>
                       {nilaiPipeline.map((_, index) => <Cell key={index} fill={nilaiColors[index]} />)}
-                      <LabelList dataKey="nilai" position="right" style={{ fontSize: 11, fill: "#475569" }} formatter={(value) => `${value}jt`} />
+                      <LabelList dataKey="nilai" position="right" style={{ fontSize: 11, fill: "#475569" }} formatter={(value) => Number(value).toLocaleString("id-ID")} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -598,7 +612,7 @@ export default function InvoiceProgressMonitor() {
                           {row.no_termin && <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">{row.no_termin}</span>}
                           <span className="text-slate-400">·</span>
                           <span className="text-slate-600">{row.nama_project}</span>
-                          {row.nilai_progress ? <span className="ml-auto text-xs text-slate-400">{formatIDR(row.nilai_progress)}</span> : null}
+                           {row.nilai_progress ? <span className="ml-auto text-xs text-slate-400">{formatIDRFromJuta(row.nilai_progress)}</span> : null}
                         </div>
                         <div className="mt-0.5 text-xs text-slate-500">
                           {row.target_konversi_pu && row.target_konversi_pu < new Date().toISOString().slice(0, 10) && row.piutang_usaha !== D ? <>Konversi PU jatuh tempo {formatDateID(row.target_konversi_pu)}. </> : null}
@@ -669,8 +683,8 @@ export default function InvoiceProgressMonitor() {
                         <input value={newRow.pct_termin} onChange={(e) => setNewRow((prev) => ({ ...prev, pct_termin: e.target.value }))} placeholder="Wajib diisi (1–100)" type="number" min="1" max="100" className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800" />
                       </label>
                       <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">
-                        Nilai Progress <span className="text-rose-500">*</span>
-                        <input value={newRow.nilai_progress} onChange={(e) => setNewRow((prev) => ({ ...prev, nilai_progress: e.target.value }))} placeholder="Wajib diisi" className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-300" />
+                        Nilai Progress (Juta Rp) <span className="text-rose-500">*</span>
+                        <input value={newRow.nilai_progress} onChange={(e) => setNewRow((prev) => ({ ...prev, nilai_progress: e.target.value }))} placeholder="Contoh: 1000" className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-300" />
                       </label>
                     </div>
                     {createModalError && (
@@ -713,8 +727,8 @@ export default function InvoiceProgressMonitor() {
                       <input value={editFormData.pct_termin} onChange={(e) => setEditFormData(prev => ({ ...prev, pct_termin: e.target.value }))} placeholder="Wajib diisi (1–100)" type="number" min="1" max="100" className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800" />
                     </label>
                     <label className="flex flex-col gap-1 text-xs font-medium text-slate-500">
-                      Nilai Progress <span className="text-rose-500">*</span>
-                      <input value={editFormData.nilai_progress} onChange={(e) => setEditFormData(prev => ({ ...prev, nilai_progress: e.target.value }))} placeholder="Wajib diisi" className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800" />
+                      Nilai Progress (Juta Rp) <span className="text-rose-500">*</span>
+                      <input value={editFormData.nilai_progress} onChange={(e) => setEditFormData(prev => ({ ...prev, nilai_progress: e.target.value }))} placeholder="Contoh: 1000" className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800" />
                     </label>
                     {editModalError && (
                       <div className="rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600">{editModalError}</div>
@@ -785,7 +799,7 @@ export default function InvoiceProgressMonitor() {
                               <div className={row.nilai_progress ? "flex-1 min-w-0" : ""}>
                                 {row.nilai_progress ? (
                                   <>
-                                    <div className={row.month_group === "previous" ? "text-sm text-slate-400" : "text-sm"}>{row.nilai_progress}</div>
+                                    <div className={row.month_group === "previous" ? "text-sm text-slate-400" : "text-sm"}>{formatJuta(row.nilai_progress)} jt</div>
                                     <div className="mt-1"><StatusBadge row={row} /></div>
                                   </>
                                 ) : (
